@@ -15,6 +15,9 @@ Columns (all sources):
   instrument_type, amendment_type, status, publication_date, closing_date, award_date, start_date, end_date, amendment_date,
   value, original_value, currency, supplier, supplier_key, supplier_legal_key, supplier_from_standardized, region,
   fiscal_year, first_seen, source_file, row_hash
+
+is_goods: CanadaBuys rows whose procurement category includes "goods" ("services related to goods" alone, such as
+repair and overhaul, is not goods); Toronto rows in the City's "Goods and Services" category.
 """
 
 from __future__ import annotations
@@ -30,7 +33,8 @@ import pyarrow as pa
 from collectors import common
 from herald import names, store
 
-LINES_VERSION = 1          # bump when the SQL below or herald/names.py changes what a line holds
+LINES_VERSION = 2          # bump when the SQL below or herald/names.py changes what a line holds
+#                            2: is_goods no longer true for "services related to goods" alone
 ORDER_BY = "source_id, amendment, row_hash"
 
 _N_CLASS = re.compile(r"^N\d{4}")
@@ -145,7 +149,7 @@ def add_derived(con: duckdb.DuckDBPyConnection, table: str, derived: dict) -> No
 _COMMON = """
     _gsin AS gsin, _gsin_description AS gsin_description, _gsin_class AS gsin_class,
     _unspsc AS unspsc, _unspsc_description AS unspsc_description, _unspsc_class AS unspsc_class,
-    _category AS category, coalesce(_category LIKE '%goods%', false) AS is_goods,
+    _category AS category, coalesce(list_contains(string_split(_category, '; '), 'goods'), false) AS is_goods,
     method, _competitive AS competitive, notice_type,
 """
 _TAIL = "fiscal_year, first_seen, source_file, row_hash"

@@ -1,10 +1,11 @@
 import csv
 import datetime as dt
+from collections import Counter
 
 import duckdb
 
 from collectors import canadabuys, toronto
-from herald import lines, store, views
+from herald import db, lines, schema, store, views
 from tests.helpers import FIXTURES, TempDataCase
 
 TODAY = dt.date(2026, 11, 23)
@@ -42,6 +43,11 @@ class LinesAndViewsTest(TempDataCase):
         self.assertEqual(r, ("PUBLIC WORKS AND GOVERNMENT SERVICES", "CORRECTIONAL SERVICE", "N7110", True,
                              "competitive", "ACME FURNITURE"))
 
+    def test_lines_current_keeps_every_toronto_award(self):
+        # one Toronto document with two awarded suppliers: two records, not two versions of one
+        n = db.connect().execute("SELECT count(*) FROM lines_current WHERE source = 'toronto' AND record_type = 'award'")
+        self.assertEqual(n.fetchone()[0], 2)
+
     def test_retender_forecast(self):
         rows = self.read("retender_forecast")
         self.assertEqual(len(rows), 2, rows)          # contract 6 and the DND goods award; not the twin, services or terminated
@@ -50,6 +56,7 @@ class LinesAndViewsTest(TempDataCase):
         self.assertEqual(float(c6["value"]), 300000.0)
         self.assertEqual(c6["buyer"], "Correctional Service of Canada")
         self.assertEqual(c6["incumbent"], "ACME FURNITURE")
+        self.assertEqual(c6["procurement_category"], "goods")
         self.assertEqual(c6["window_basis"], "department")
         self.assertEqual(c6["original_tender_date"], "2024-05-03")
         self.assertTrue(c6["earlier_tender_dates"].startswith("2024-05-03; 2023-05-03; 2022-05-03"))
@@ -78,6 +85,22 @@ class LinesAndViewsTest(TempDataCase):
         self.assertEqual(float(csc["share_bought_through_pspc"]), 1.0)
         counts = self.read("counts")
         self.assertIn("toronto", {r["source"] for r in counts})
+
+
+class IsGoodsTest(TempDataCase):
+    def test_services_related_to_goods_alone_is_not_goods(self):
+        spec = schema.CANADABUYS["tenders"]
+        cats = {"T1": "*GD", "T2": "*SRVTGD", "T3": "*SRV\n*GD", "T4": "*SRV"}
+        recs = [{"referenceNumber-numeroReference": ref, "amendmentNumber-numeroModification": "000",
+                 "publicationDate-datePublication": "2025-05-01",
+                 "procurementCategory-categorieApprovisionnement": cat} for ref, cat in cats.items()]
+        rows = store.typed_rows(recs, spec, schema.CANADABUYS_PARTITION_DATE["tenders"], "fixture.csv", TODAY,
+                                Counter(), Counter())
+        store.stage(rows, spec, store.table_root("canadabuys", "tenders") / "2025-2026" / "base.parquet")
+        lines.build()
+        lfiles = store.parquet_files(self.data / "lines")
+        got = dict(duckdb.sql(f"SELECT source_id, is_goods FROM read_parquet({store.sql_list(lfiles)})").fetchall())
+        self.assertEqual(got, {"T1": True, "T2": False, "T3": True, "T4": False})
 
 
 class DeterminismTest(LinesAndViewsTest):

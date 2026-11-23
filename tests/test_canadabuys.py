@@ -110,8 +110,14 @@ class CanadaBuysTest(TempDataCase):
         self.assertEqual(total, 10)
 
     def test_missing_daily_file_is_partial_not_fatal(self):
-        canadabuys.main(["--date", "2027-06-15", "--table", "awards"] + FILES)   # 2027-2028 file is not in fixtures
+        # in April both fiscal years' files are read; 2027-2028 is not in the fixtures, 2026-2027 is
+        self.assertEqual(canadabuys.main(["--date", "2027-04-15", "--table", "awards"] + FILES), 0)
         self.assertEqual(common.last_runs("canadabuys")[-1]["status"], "partial")
+
+    def test_table_with_no_readable_file_fails_the_run(self):
+        # in June only the 2027-2028 file is read, and it is not in the fixtures
+        self.assertEqual(canadabuys.main(["--date", "2027-06-15", "--table", "awards"] + FILES), 1)
+        self.assertEqual(common.last_runs("canadabuys")[-1]["status"], "failed")
 
 
 class HelpersTest(TempDataCase):

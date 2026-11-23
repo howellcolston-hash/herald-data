@@ -12,7 +12,9 @@
     --table tenders|awards|contracts (repeatable)         limit any of the above to some tables
     --files DIR                                           read the published files from DIR instead of downloading
 
-Re-running a period rewrites the same files (base for a fiscal year, daily for a day). Packages: tender notices
+Re-running a period rewrites the same files (base for a fiscal year, daily for a day). A daily run in which one file
+can't be fetched is logged as partial; one in which no file of a table can be fetched is logged as failed and exits 1,
+so the workflow shows red. Packages: tender notices
 6abd20d4-7a1c-4b38-baa2-9525d0bb2fd2, award notices a1acb126-9ce8-40a9-b889-5da2b1dd20cb, contract history
 4fe645a1-ffcd-40c1-9385-2c771be956a4. Card: catalog/canadabuys_*.md.
 """
@@ -128,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     params = {"backfill": args.backfill, "full": args.full, "date": day.isoformat(), "fy": fys, "tables": tables}
     workdir = common.cache_dir() / COLLECTOR / day.isoformat()
     con = duckdb.connect()
+    failed = False
 
     with common.run(COLLECTOR, params) as ctx:
         for table in tables:
@@ -149,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
                 staged = stage_files(table, names, args.files, workdir, run_date, ctx, required=False)
                 if not staged:
                     ctx["notes"].append(f"{table}: no file could be read")
-                    ctx["status"] = "partial"
+                    ctx["status"] = "failed"
+                    failed = True
                     continue
                 n = store.write_daily(con, root, staged, day, ORDER_BY)
                 ctx["counts"].setdefault("written", {})[table] = n
@@ -157,8 +161,10 @@ def main(argv: list[str] | None = None) -> int:
                 ctx["periods"].append(f"{table}:{day.isoformat()}")
                 ctx["notes"].append(f"{table}: {n} new or changed rows from {len(staged)} files")
             ctx["counts"].setdefault("stored_rows", {})[table] = store.count_rows(con, root)
+        if failed:
+            ctx["status"] = "failed"      # a later table's partial note must not hide a table that got nothing
     shutil.rmtree(workdir, ignore_errors=True)
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

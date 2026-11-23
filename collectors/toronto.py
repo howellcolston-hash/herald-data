@@ -8,7 +8,8 @@
 
 Datasets: tobids-all-open-solicitations and tobids-awarded-contracts on ckan0.cf.opendata.inter.prod-toronto.ca.
 The awarded-contracts file repeats each document's whole Award list (JSON) on every row; it is stored as one row per
-(document, awarded supplier, amount, date). Card: catalog/toronto.md.
+(document, awarded supplier, amount, date). A file that can't be fetched is logged as failed and the run exits 1.
+Cards: catalog/toronto_solicitations.md, catalog/toronto_awards.md.
 """
 
 from __future__ import annotations
@@ -92,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     day = args.date or run_date
     workdir = common.cache_dir() / COLLECTOR / day.isoformat()
     con = duckdb.connect()
+    failed = False
     with common.run(COLLECTOR, {"backfill": args.backfill, "date": day.isoformat(), "tables": tables}) as ctx:
         for table in tables:
             root = store.table_root(COLLECTOR, table)
@@ -99,7 +101,8 @@ def main(argv: list[str] | None = None) -> int:
                 staged = stage_table(table, args.files, workdir, run_date, ctx)
             except common.FetchError as e:
                 ctx["notes"].append(f"{table}: not fetched ({e})")
-                ctx["status"] = "partial"
+                ctx["status"] = "failed"
+                failed = True
                 continue
             if args.backfill:
                 written = store.write_base(con, root, staged, None, ORDER_BY[table])
@@ -113,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             ctx["rows"] += n
             ctx["notes"].append(f"{table}: {n} rows written")
     shutil.rmtree(workdir, ignore_errors=True)
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

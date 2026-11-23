@@ -17,7 +17,8 @@ Toronto's solicitations and awarded contracts. Each has a card in `catalog/`.
 
 Each run appends one line per step to `data/_runs/<step>.jsonl`: status (`ok`, `partial`, `failed`), rows, the
 periods written, the source files' row counts and any notes (a missing file, a column the publisher added, values that
-would not parse). A failed collector fails the workflow, so it shows in red on the Actions tab.
+would not parse). A failed collector fails the workflow, so it shows in red on the Actions tab: a daily run in which
+one file can't be fetched is `partial`; one in which no file of a table can be fetched is `failed` and exits 1.
 
 ## Layout
 
@@ -68,7 +69,7 @@ All raw tables carry `fiscal_year`, `source_file`, `row_hash` and `first_seen`. 
 | `toronto_solicitations` | `data/toronto/solicitations/` | City of Toronto solicitation | document_number, rfx_type, issue_date, submission_deadline, category, division, description |
 | `toronto_awards` | `data/toronto/awards/` | (document, awarded supplier) | document_number, supplier, award_amount, date_awarded, division |
 | `lines` | `data/lines/` | any of the above, in one shape | see below |
-| `lines_current` | (view) | the newest stored version of each record | as lines |
+| `lines_current` | (view) | the newest stored version of each record (every distinct Toronto row: Toronto publishes no row id) | as lines |
 
 `lines` columns: `line_id, source, record_type` (tender, award, contract), `source_id, amendment, solicitation_key`
 (links a tender to its award and contract), `contract_number, title, buyer, buyer_key, end_user, end_user_key,
@@ -76,7 +77,8 @@ gsin, gsin_description, gsin_class, unspsc, unspsc_description, unspsc_class, ca
 construction, services related to goods), `is_goods, method, competitive` (competitive, non-competitive, unknown),
 `notice_type, instrument_type, amendment_type, status, publication_date, closing_date, award_date, start_date,
 end_date, amendment_date, value, original_value, currency, supplier, supplier_key, supplier_legal_key,
-supplier_from_standardized, region, fiscal_year, first_seen, source_file, row_hash`.
+supplier_from_standardized, region, fiscal_year, first_seen, source_file, row_hash`. `is_goods` is true when the
+procurement category includes goods; "services related to goods" alone (repair, overhaul, maintenance) is not goods.
 
 Name matching (`herald/names.py`): suppliers by the files' standardized name first; otherwise the legal name, upper
 cased, accents and punctuation removed, `&` spelled out, a leading THE and trailing legal forms (INC, LTD, LIMITED,
@@ -89,7 +91,7 @@ Buyers: a trailing `(ABC)` acronym, a leading `Department of` and trailing `Cana
 
 | file | one row per | what to read |
 |---|---|---|
-| `retender_forecast.csv` | goods contract or standing offer ending in the next 12 months | `expected_notice_from` / `expected_notice_to` (when the buyer's replacement tender should appear, from that department's own history of tender-to-award times), `notice_status` (upcoming, window open, window passed), `end_date`, `buyer`, `category`, `gsin`, `unspsc`, `instrument_type`, `incumbent`, `value`, `award_date`, `competitive`, `original_tender_date`, `earlier_tender_dates` (the department's last five tenders in the same class), `possible_replacement_tender` (a tender the same department posted in the same class since the award, in the last year), `window_basis` and `window_basis_deals` (department, class or all goods, and how many linked deals that rests on), `typical_notice_to_award_days`, `title`, `contract_number`. Sorted most urgent first: open windows (soonest-closing first), then upcoming ones (soonest-opening first), then passed ones; value breaks ties. |
+| `retender_forecast.csv` | goods (or goods-related services) contract, standing offer or supply arrangement ending in the next 12 months | `expected_notice_from` / `expected_notice_to` (when the buyer's replacement tender should appear, from that department's own history of tender-to-award times), `notice_status` (upcoming, window open, window passed), `end_date`, `term_days` (start to end: many goods contracts are one-off purchases whose end date is delivery or a one-year warranty; standing offers and multi-year terms are the likeliest to be re-tendered), `buyer`, `category`, `procurement_category` (goods, services related to goods, ...), `gsin`, `unspsc`, `instrument_type`, `incumbent`, `value` (blank when the files publish only a $0 or $1 placeholder, as most standing offers and supply arrangements do), `award_date`, `competitive`, `original_tender_date`, `earlier_tender_dates` (the department's last five tenders in the same class), `possible_replacement_tender` (a tender the same department posted in the same class since the award, in the last year), `window_basis` and `window_basis_deals` (department, class or all goods, and how many linked deals that rests on), `typical_notice_to_award_days`, `title`, `contract_number`. Sorted most urgent first: open windows (soonest-closing first), then upcoming ones (soonest-opening first), then passed ones; value breaks ties. |
 | `category_book.csv` | GSIN class or UNSPSC class | deals and value in total and for each of the last five fiscal years, `by_fiscal_year` (full history), `value_p25`/`value_median`/`value_p75`, `share_non_competitive`, `distinct_winners`, `top_winners` (top three by deal count), `peak_award_months`, tenders and the last tender date. Sorted by total value. |
 | `buyer_profiles.csv` | buying department (the end user when PSPC buys for it) | recent deals and value (this fiscal year and the three before), goods share, tenders per month, days between tender days, busiest months, top categories and suppliers, deal size median/p75/max, `median_notice_to_award_days` (with its sample size), days tenders stay open, share non-competitive, share bought through PSPC. Sorted by recent value. |
 | `counts.csv` | source, record type, fiscal year | lines and records stored, last `first_seen`: for checking loads |
@@ -100,10 +102,13 @@ the top of `herald/views.py`, marked provisional.
 ## Querying with DuckDB
 
 ```bash
-git clone https://github.com/howellcolston-hash/herald-data && cd herald-data
+git clone --depth 1 https://github.com/howellcolston-hash/herald-data && cd herald-data   # latest files only: about a 160 MB download
 pip install -r requirements.txt
 python -m herald.db                      # row count of every view
 ```
+
+The views alone need no setup: `views/*.csv` are plain sorted CSVs (or read them straight from
+`https://raw.githubusercontent.com/howellcolston-hash/herald-data/main/views/<file>.csv`).
 
 ```python
 from herald.db import connect
@@ -148,8 +153,17 @@ SELECT * FROM read_csv('views/retender_forecast.csv') WHERE notice_status <> 'wi
 - **Currencies.** Values are summed only for CAD (and blank-currency) rows; legacy awards include USD, EUR and others.
 - **Contract history refreshes about monthly**, so recent PSPC contracts can lag by weeks; award notices fill part
   of the gap.
-- **Toronto** carries no commodity codes and its solicitations file holds mostly 2022 on.
-- **Not yet collected:** SEAO (Québec), other provinces and municipalities beyond what CanadaBuys republishes.
+- **Toronto** carries no commodity codes and its solicitations file holds mostly 2022 on. It publishes no row id, so a
+  row the City corrects shows as a second row.
+- **Standing offers and supply arrangements carry no value** (call-ups are published separately, if at all); about a
+  fifth of the forecast has a blank value for that reason.
+- **The forecast cannot tell a one-off purchase from a supply period.** It lists every goods deal ending within a year;
+  use `term_days`, `instrument_type` and `earlier_tender_dates` to judge whether the buyer buys it again.
+  `possible_replacement_tender` matches on department and class only, so for large buyers (DND) it is often a
+  different item in the same class.
+- **Not yet collected:** SEAO (Québec: OCDS JSON monthly files since 2021, about 4 GB, and XML files 2009 to 2024
+  on Données Québec, package `systeme-electronique-dappel-doffres-seao`), other provinces and municipalities beyond
+  what CanadaBuys republishes.
 
 ## Running locally
 

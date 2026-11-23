@@ -5,7 +5,8 @@
 
 Views: lines, lines_current (one version per record), canadabuys_tenders, canadabuys_awards, canadabuys_contracts,
 toronto_solicitations, toronto_awards. Each table view holds every stored version of every row (append-only); use
-lines_current, or the QUALIFY clause in it, for the newest version of each record.
+lines_current, or the QUALIFY clause in it, for the newest version of each record. Toronto publishes no row id (a
+document can list several awarded suppliers), so lines_current keeps every distinct Toronto row.
 """
 
 from __future__ import annotations
@@ -30,7 +31,8 @@ def connect(database: str = ":memory:") -> duckdb.DuckDBPyConnection:
     if lines:
         con.execute(f"CREATE OR REPLACE VIEW lines AS SELECT * FROM read_parquet({store.sql_list(lines)}, union_by_name=true)")
         con.execute("""CREATE OR REPLACE VIEW lines_current AS SELECT * FROM lines
-                       QUALIFY row_number() OVER (PARTITION BY source, record_type, source_id, amendment
+                       QUALIFY row_number() OVER (PARTITION BY source, record_type, source_id, amendment,
+                                                               CASE WHEN source = 'toronto' THEN row_hash END
                                                   ORDER BY first_seen DESC, source_file DESC, row_hash) = 1""")
     return con
 

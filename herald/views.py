@@ -13,7 +13,8 @@ views/counts.csv             rows per source, record type and fiscal year, for c
 
 How the views read `lines` (all PROVISIONAL, set out here so they can be argued with):
   * Current version: of the stored versions of one record (source, record type, source id, amendment), the one first
-    seen last; on a tie, the newer published file.
+    seen last; on a tie, the newer published file. Toronto publishes no row id (one document can list several
+    awarded suppliers), so every distinct Toronto row is its own record.
   * Deal: the amendments of one contract or award, keyed by its contract number (':' read as '/'), else its source
     id. Award notices whose deal also appears in contract history are dropped (contract history is fuller). A deal's
     value is the larger of its highest stated total and the sum of its amendment amounts; its end date is the latest
@@ -25,8 +26,12 @@ How the views read `lines` (all PROVISIONAL, set out here so they can be argued 
     when 0 to 730 days.
   * Expected notice window: end date minus the 75th and 25th percentile lead time of the department (at least 5
     linked goods deals), else of the GSIN/UNSPSC class (at least 5), else of all goods deals.
+  * Term: days from start (else award) to end. Many goods "contracts" are one-off purchases whose end date is the
+    delivery date or the end of a one-year warranty, and may never be tendered again; standing offers and terms of
+    two years or more are supply periods, the likeliest to be re-tendered.
   * Values are summed only for CAD (or blank-currency) rows; amounts are what the files publish (totals, not unit
-    prices).
+    prices). A deal value under $100 is a placeholder (standing offers and supply arrangements usually publish $0,
+    some $1): the forecast shows it blank and the typical-size figures leave it out.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ from herald.lines import lines_root
 PSPC_KEY = "PUBLIC WORKS AND GOVERNMENT SERVICES"
 MIN_LINKED = 5
 FORECAST_DAYS = 365
+MIN_VALUE = 100          # deal values below this are placeholders ($0 standing offers, $1 lines), not amounts
 
 
 def setup(con: duckdb.DuckDBPyConnection, today: dt.date) -> None:
@@ -62,7 +68,8 @@ def setup(con: duckdb.DuckDBPyConnection, today: dt.date) -> None:
                             CAST(round(value, 2) AS DECIMAL(18, 2)) AS value,
                             CAST(round(original_value, 2) AS DECIMAL(18, 2)) AS original_value)
           FROM lines
-          QUALIFY row_number() OVER (PARTITION BY source, record_type, source_id, amendment
+          QUALIFY row_number() OVER (PARTITION BY source, record_type, source_id, amendment,
+                                                  CASE WHEN source = 'toronto' THEN row_hash END
                                      ORDER BY first_seen DESC, source_file DESC, row_hash) = 1)""")
     # supplier map: legal-name keys paired with exactly one standardized key in contract history
     con.execute("""
@@ -193,11 +200,13 @@ def retender_forecast(con, today: dt.date, out: Path) -> int:
            CASE WHEN f.end_date - CAST(round(f.p25) AS INTEGER) < DATE '{today}' THEN 'window passed'
                 WHEN f.end_date - CAST(round(f.p75) AS INTEGER) <= DATE '{today}' THEN 'window open'
                 ELSE 'upcoming' END AS notice_status,
-           f.end_date,
+           f.end_date, datediff('day', coalesce(f.start_date, f.award_date), f.end_date) AS term_days,
            coalesce(dn.dept_display, f.dept_key) AS buyer, f.buyer AS contracting_entity,
-           coalesce(f.gsin_description, f.unspsc_description) AS category, f.gsin, f.unspsc,
+           coalesce(f.gsin_description, f.unspsc_description) AS category, f.category AS procurement_category,
+           f.gsin, f.unspsc,
            f.instrument_type, coalesce(sn.supplier_name, f.supplier_uid) AS incumbent,
-           round(f.value, 2) AS value, CASE WHEN f.is_cad THEN 'CAD' ELSE 'mixed or foreign' END AS value_currency,
+           CASE WHEN f.value >= {MIN_VALUE} THEN round(f.value, 2) END AS value,
+           CASE WHEN f.is_cad THEN 'CAD' ELSE 'mixed or foreign' END AS value_currency,
            f.award_date, f.method, f.competitive, f.own_tender AS original_tender_date,
            f.earlier AS earlier_tender_dates, f.n_earlier AS n_earlier_tenders,
            f.recent_tender AS possible_replacement_tender,
@@ -261,9 +270,9 @@ def category_book(con, today: dt.date, out: Path) -> int:
            any_value(dsc.category) AS category,
            count(*) AS n_deals, round(sum(b.value) FILTER (WHERE b.is_cad), 0) AS value_total,
            {cols},
-           round(quantile_cont(b.value, 0.25) FILTER (WHERE b.is_cad AND b.value > 0), 0) AS value_p25,
-           round(median(b.value) FILTER (WHERE b.is_cad AND b.value > 0), 0) AS value_median,
-           round(quantile_cont(b.value, 0.75) FILTER (WHERE b.is_cad AND b.value > 0), 0) AS value_p75,
+           round(quantile_cont(b.value, 0.25) FILTER (WHERE b.is_cad AND b.value >= {MIN_VALUE}), 0) AS value_p25,
+           round(median(b.value) FILTER (WHERE b.is_cad AND b.value >= {MIN_VALUE}), 0) AS value_median,
+           round(quantile_cont(b.value, 0.75) FILTER (WHERE b.is_cad AND b.value >= {MIN_VALUE}), 0) AS value_p75,
            round(count(*) FILTER (WHERE b.competitive = 'non-competitive')
                  / nullif(count(*) FILTER (WHERE b.competitive <> 'unknown'), 0), 3) AS share_non_competitive,
            count(DISTINCT b.supplier_uid) AS distinct_winners,
@@ -321,8 +330,8 @@ def buyer_profiles(con, today: dt.date, out: Path) -> int:
              round(sum(value) FILTER (WHERE is_cad AND award_date >= DATE '{since}'), 0) AS value_recent,
              round(sum(value) FILTER (WHERE is_cad AND is_goods AND award_date >= DATE '{since}')
                    / nullif(sum(value) FILTER (WHERE is_cad AND award_date >= DATE '{since}'), 0), 3) AS goods_value_share,
-             round(median(value) FILTER (WHERE is_cad AND value > 0 AND award_date >= DATE '{since}'), 0) AS deal_value_median,
-             round(quantile_cont(value, 0.75) FILTER (WHERE is_cad AND value > 0 AND award_date >= DATE '{since}'), 0) AS deal_value_p75,
+             round(median(value) FILTER (WHERE is_cad AND value >= {MIN_VALUE} AND award_date >= DATE '{since}'), 0) AS deal_value_median,
+             round(quantile_cont(value, 0.75) FILTER (WHERE is_cad AND value >= {MIN_VALUE} AND award_date >= DATE '{since}'), 0) AS deal_value_p75,
              round(max(value) FILTER (WHERE is_cad AND award_date >= DATE '{since}'), 0) AS deal_value_max,
              round(count(*) FILTER (WHERE competitive = 'non-competitive' AND award_date >= DATE '{since}')
                    / nullif(count(*) FILTER (WHERE competitive <> 'unknown' AND award_date >= DATE '{since}'), 0), 3)
