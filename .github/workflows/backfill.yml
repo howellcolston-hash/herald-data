@@ -1,0 +1,64 @@
+name: backfill
+# Rebuild fiscal-year base files from the full published history, then lines and views. Run by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Which collector"
+        type: choice
+        options: [all, canadabuys, toronto]
+        default: all
+      fiscal_years:
+        description: "CanadaBuys fiscal years, space-separated (e.g. 2015-2016 2016-2017); empty = all"
+        required: false
+        default: ""
+      tables:
+        description: "CanadaBuys tables, space-separated (tenders awards contracts); empty = all"
+        required: false
+        default: ""
+permissions:
+  contents: write
+concurrency:
+  group: data-writes
+  cancel-in-progress: false
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: canadabuys
+        if: inputs.source == 'all' || inputs.source == 'canadabuys'
+        env:
+          FYS: ${{ inputs.fiscal_years }}
+          TABLES: ${{ inputs.tables }}
+        run: |
+          args="--backfill"
+          for fy in $FYS; do args="$args --fy $fy"; done
+          for t in $TABLES; do args="$args --table $t"; done
+          python -m collectors.canadabuys $args
+      - name: toronto
+        if: inputs.source == 'all' || inputs.source == 'toronto'
+        run: python -m collectors.toronto --backfill
+      - name: build
+        run: |
+          python -m herald.lines
+          python -m herald.views
+          python -m herald.check
+          python -m herald.db
+      - name: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data views
+          if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
+          git commit -q -m "data: backfill ${{ inputs.source }} $(date -u +%F)"
+          for i in 1 2 3 4 5; do
+            git pull -q --rebase origin main && git push -q origin HEAD:main && exit 0
+            sleep $((i * 10))
+          done
+          exit 1

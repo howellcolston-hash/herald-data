@@ -1,0 +1,59 @@
+name: daily
+# Collect newly published rows, fold finished months, rebuild lines and the views, commit.
+on:
+  schedule:
+    - cron: "37 14 * * *"     # 14:37 UTC: after CanadaBuys' morning file refresh (about 11:00-13:00 UTC)
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Also read the complete files (otherwise only on Sundays)"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: data-writes
+  cancel-in-progress: false
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: collect
+        id: collect
+        run: |
+          set +e
+          failed=0
+          FULL=""
+          if [ "$(date -u +%u)" = "7" ] || [ "${{ inputs.full }}" = "true" ]; then FULL="--full"; fi
+          python -m collectors.canadabuys $FULL || failed=1
+          python -m collectors.toronto || failed=1
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+      - name: build
+        run: |
+          python -m herald.compact
+          python -m herald.lines
+          python -m herald.views
+          python -m herald.check
+      - name: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data views
+          if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
+          git commit -q -m "data: daily $(date -u +%F)"
+          for i in 1 2 3 4 5; do
+            git pull -q --rebase origin main && git push -q origin HEAD:main && exit 0
+            sleep $((i * 10))
+          done
+          exit 1
+      - name: fail if a collector failed
+        if: steps.collect.outputs.failed == '1'
+        run: |
+          echo "a collector failed; see data/_runs/*.jsonl for the reason"
+          exit 1
