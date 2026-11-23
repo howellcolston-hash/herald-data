@@ -57,10 +57,13 @@ def setup(con: duckdb.DuckDBPyConnection, today: dt.date) -> None:
            CASE WHEN buyer_key = '{PSPC_KEY}' AND end_user_key IS NOT NULL THEN end_user_key ELSE buyer_key END AS dept_key,
            CASE WHEN buyer_key = '{PSPC_KEY}' AND end_user_key IS NOT NULL THEN first_part_s(end_user) ELSE buyer END AS dept_name,
            (currency IS NULL OR currency = 'CAD') AS is_cad
-    FROM (SELECT * REPLACE (CASE WHEN end_date >= DATE '2100-01-01' OR end_date < DATE '1990-01-01' THEN NULL ELSE end_date END AS end_date)
+    FROM (SELECT * REPLACE (CASE WHEN end_date >= DATE '2100-01-01' OR end_date < DATE '1990-01-01' THEN NULL ELSE end_date END AS end_date,
+                            -- exact cents, so sums don't depend on the order rows are added in
+                            CAST(round(value, 2) AS DECIMAL(18, 2)) AS value,
+                            CAST(round(original_value, 2) AS DECIMAL(18, 2)) AS original_value)
           FROM lines
           QUALIFY row_number() OVER (PARTITION BY source, record_type, source_id, amendment
-                                     ORDER BY first_seen DESC, source_file DESC) = 1)""")
+                                     ORDER BY first_seen DESC, source_file DESC, row_hash) = 1)""")
     # supplier map: legal-name keys paired with exactly one standardized key in contract history
     con.execute("""
     CREATE OR REPLACE TEMP TABLE supplier_map AS
@@ -73,28 +76,33 @@ def setup(con: duckdb.DuckDBPyConnection, today: dt.date) -> None:
     LEFT JOIN supplier_map m ON c.supplier_legal_key = m.legal_key AND NOT c.supplier_from_standardized""")
     con.execute("""
     CREATE OR REPLACE TEMP TABLE supplier_names AS
-    SELECT supplier_uid, mode(supplier) AS supplier_name FROM cur2 WHERE supplier_uid IS NOT NULL GROUP BY 1""")
+    SELECT supplier_uid, supplier AS supplier_name FROM (
+      SELECT supplier_uid, supplier, count(*) AS n FROM cur2 WHERE supplier_uid IS NOT NULL AND supplier IS NOT NULL GROUP BY 1, 2)
+    QUALIFY row_number() OVER (PARTITION BY supplier_uid ORDER BY n DESC, supplier) = 1""")
     con.execute("""
     CREATE OR REPLACE TEMP TABLE dept_names AS
-    SELECT dept_key, mode(dept_name) AS dept_display FROM cur2 WHERE dept_key IS NOT NULL GROUP BY 1""")
+    SELECT dept_key, dept_name AS dept_display FROM (
+      SELECT dept_key, dept_name, count(*) AS n FROM cur2 WHERE dept_key IS NOT NULL AND dept_name IS NOT NULL GROUP BY 1, 2)
+    QUALIFY row_number() OVER (PARTITION BY dept_key ORDER BY n DESC, dept_name) = 1""")
     # deals
     con.execute("""
     CREATE OR REPLACE TEMP TABLE deal_lines AS
-    SELECT *, source || ':' || upper(replace(replace(coalesce(contract_number, source_id), ':', '/'), ' ', '')) AS deal_id
+    SELECT *, source || ':' || upper(replace(replace(coalesce(contract_number, source_id), ':', '/'), ' ', '')) AS deal_id,
+           amendment || '|' || source_id || '|' || row_hash AS ok
     FROM cur2 WHERE record_type IN ('award', 'contract')""")
     con.execute("""
     CREATE OR REPLACE TEMP TABLE deals AS
     WITH d AS (
-      SELECT deal_id, source, any_value(record_type) AS record_type,
-             arg_max(source_id, amendment) AS source_id, max(contract_number) AS contract_number,
-             arg_min(title, amendment) AS title, mode(dept_key) AS dept_key, mode(buyer) AS buyer,
-             arg_min(supplier_uid, amendment) AS supplier_uid,
-             arg_min(gsin, amendment) AS gsin, arg_min(gsin_description, amendment) AS gsin_description,
-             arg_min(gsin_class, amendment) AS gsin_class, arg_min(unspsc, amendment) AS unspsc,
-             arg_min(unspsc_description, amendment) AS unspsc_description, arg_min(unspsc_class, amendment) AS unspsc_class,
-             arg_min(category, amendment) AS category, bool_or(is_goods) AS is_goods,
-             arg_min(method, amendment) AS method, arg_min(competitive, amendment) AS competitive,
-             arg_max(instrument_type, amendment) AS instrument_type,
+      SELECT deal_id, source, record_type,
+             arg_max(source_id, ok) AS source_id, max(contract_number) AS contract_number,
+             arg_min(title, ok) AS title, arg_min(dept_key, ok) AS dept_key, arg_min(buyer, ok) AS buyer,
+             arg_min(supplier_uid, ok) AS supplier_uid,
+             arg_min(gsin, ok) AS gsin, arg_min(gsin_description, ok) AS gsin_description,
+             arg_min(gsin_class, ok) AS gsin_class, arg_min(unspsc, ok) AS unspsc,
+             arg_min(unspsc_description, ok) AS unspsc_description, arg_min(unspsc_class, ok) AS unspsc_class,
+             arg_min(category, ok) AS category, bool_or(is_goods) AS is_goods,
+             arg_min(method, ok) AS method, arg_min(competitive, ok) AS competitive,
+             arg_max(instrument_type, ok) AS instrument_type,
              min(award_date) AS award_date, min(start_date) AS start_date, max(end_date) AS end_date,
              greatest(max(value), sum(original_value)) AS value, bool_and(is_cad) AS is_cad,
              max(solicitation_key) AS solicitation_key, count(*) AS n_amendments,
@@ -108,7 +116,7 @@ def setup(con: duckdb.DuckDBPyConnection, today: dt.date) -> None:
     con.execute("""
     CREATE OR REPLACE TEMP TABLE tenders AS
     SELECT source, source_id, min(publication_date) AS publication_date, max(closing_date) AS closing_date,
-           mode(dept_key) AS dept_key, max(solicitation_key) AS solicitation_key,
+           arg_min(dept_key, amendment) AS dept_key, max(solicitation_key) AS solicitation_key,
            arg_min(gsin_class, amendment) AS gsin_class, arg_min(unspsc_class, amendment) AS unspsc_class,
            bool_or(is_goods) AS is_goods, arg_min(title, amendment) AS title, max(status) AS status,
            arg_min(notice_type, amendment) AS notice_type
@@ -122,12 +130,6 @@ def setup(con: duckdb.DuckDBPyConnection, today: dt.date) -> None:
            datediff('day', t.pub, d.award_date) AS lead_days, datediff('day', t.pub, t.close) AS tender_days
     FROM deals d JOIN t USING (solicitation_key)
     WHERE d.award_date IS NOT NULL AND datediff('day', t.pub, d.award_date) BETWEEN 0 AND 730""")
-
-
-def _first_part_s(s: str | None) -> str | None:
-    if not s:
-        return None
-    return s.split(";")[0].strip() or None
 
 
 def retender_forecast(con, today: dt.date, out: Path) -> int:
@@ -150,7 +152,7 @@ def retender_forecast(con, today: dt.date, out: Path) -> int:
               AND (is_goods OR coalesce(category, '') LIKE '%related to goods%')),
     prior AS (
       SELECT d.deal_id,
-             string_agg(strftime(t.publication_date, '%Y-%m-%d'), '; ' ORDER BY t.publication_date DESC) AS earlier,
+             string_agg(DISTINCT strftime(t.publication_date, '%Y-%m-%d'), '; ' ORDER BY strftime(t.publication_date, '%Y-%m-%d') DESC) AS earlier,
              count(*) AS n_earlier
       FROM due d JOIN tenders t
         ON t.dept_key = d.dept_key
@@ -162,7 +164,8 @@ def retender_forecast(con, today: dt.date, out: Path) -> int:
                JOIN tenders t ON t.solicitation_key = d.solicitation_key GROUP BY 1),
     recent AS (
       SELECT d.deal_id, arg_max(t.source_id || ' (' || strftime(t.publication_date, '%Y-%m-%d') || ', '
-                                || coalesce(t.status, '') || '): ' || coalesce(left(t.title, 120), ''), t.publication_date) AS recent_tender
+                                || coalesce(t.status, '') || '): ' || coalesce(left(t.title, 120), ''),
+                                strftime(t.publication_date, '%Y-%m-%d') || t.source_id) AS recent_tender
       FROM due d JOIN tenders t
         ON t.dept_key = d.dept_key
        AND ((d.gsin_class IS NOT NULL AND t.gsin_class = d.gsin_class)
@@ -225,14 +228,17 @@ def category_book(con, today: dt.date, out: Path) -> int:
     FROM deals WHERE unspsc_class IS NOT NULL""")
     sql = f"""
     WITH b AS (SELECT * FROM book_src WHERE NOT cancelled),
+    dsc AS (SELECT scheme, class, description, category FROM (
+              SELECT scheme, class, description, category, count(*) AS n FROM b GROUP BY ALL)
+            QUALIFY row_number() OVER (PARTITION BY scheme, class ORDER BY n DESC, description NULLS LAST, category NULLS LAST) = 1),
     winners AS (
       SELECT scheme, class, supplier_uid, sum(value) FILTER (WHERE is_cad) AS v, count(*) AS n FROM b
       WHERE supplier_uid IS NOT NULL GROUP BY ALL),
     top AS (
       SELECT w.scheme, w.class,
-             string_agg(coalesce(sn.supplier_name, w.supplier_uid) || ' (' || w.n || ')', '; ' ORDER BY w.n DESC, w.v DESC NULLS LAST)
+             string_agg(coalesce(sn.supplier_name, w.supplier_uid) || ' (' || w.n || ')', '; ' ORDER BY w.n DESC, w.v DESC NULLS LAST, w.supplier_uid)
                FILTER (WHERE rk <= 3) AS top_winners
-      FROM (SELECT *, row_number() OVER (PARTITION BY scheme, class ORDER BY n DESC, v DESC NULLS LAST) AS rk FROM winners) w
+      FROM (SELECT *, row_number() OVER (PARTITION BY scheme, class ORDER BY n DESC, v DESC NULLS LAST, supplier_uid) AS rk FROM winners) w
       LEFT JOIN supplier_names sn ON sn.supplier_uid = w.supplier_uid GROUP BY 1, 2),
     months AS (
       SELECT scheme, class, string_agg(m, ', ' ORDER BY n DESC, m) FILTER (WHERE rk <= 2) AS peak_award_months FROM (
@@ -248,8 +254,8 @@ def category_book(con, today: dt.date, out: Path) -> int:
       FROM tenders WHERE gsin_class IS NOT NULL GROUP BY 2
       UNION ALL
       SELECT 'UNSPSC', unspsc_class, count(*), max(publication_date) FROM tenders WHERE unspsc_class IS NOT NULL GROUP BY 2)
-    SELECT b.scheme, b.class, mode(b.description) AS description,
-           mode(b.category) AS category,
+    SELECT b.scheme, b.class, any_value(dsc.description) AS description,
+           any_value(dsc.category) AS category,
            count(*) AS n_deals, round(sum(b.value) FILTER (WHERE b.is_cad), 0) AS value_total,
            {cols},
            round(quantile_cont(b.value, 0.25) FILTER (WHERE b.is_cad AND b.value > 0), 0) AS value_p25,
@@ -262,6 +268,7 @@ def category_book(con, today: dt.date, out: Path) -> int:
            any_value(tend.n_tenders) AS n_tenders, any_value(tend.last_tender) AS last_tender_date,
            max(b.award_date) AS last_award_date, any_value(hist.by_fiscal_year) AS by_fiscal_year
     FROM b
+    LEFT JOIN dsc USING (scheme, class)
     LEFT JOIN top USING (scheme, class) LEFT JOIN months USING (scheme, class)
     LEFT JOIN hist USING (scheme, class) LEFT JOIN tend USING (scheme, class)
     GROUP BY b.scheme, b.class"""
@@ -275,13 +282,13 @@ def buyer_profiles(con, today: dt.date, out: Path) -> int:
     WITH d AS (SELECT * FROM deals WHERE NOT cancelled AND dept_key IS NOT NULL),
     t AS (SELECT * FROM tenders WHERE dept_key IS NOT NULL),
     cats AS (
-      SELECT dept_key, string_agg(c || ' (' || n || ')', '; ' ORDER BY n DESC) FILTER (WHERE rk <= 3) AS top_categories FROM (
+      SELECT dept_key, string_agg(c || ' (' || n || ')', '; ' ORDER BY n DESC, c) FILTER (WHERE rk <= 3) AS top_categories FROM (
         SELECT dept_key, coalesce(gsin_description, unspsc_description) AS c, count(*) n,
                row_number() OVER (PARTITION BY dept_key ORDER BY count(*) DESC, coalesce(gsin_description, unspsc_description)) AS rk
         FROM d WHERE coalesce(gsin_description, unspsc_description) IS NOT NULL AND award_date >= DATE '{since}'
         GROUP BY 1, 2) GROUP BY 1),
     sup AS (
-      SELECT dept_key, string_agg(coalesce(sn.supplier_name, s.supplier_uid) || ' (' || n || ')', '; ' ORDER BY n DESC)
+      SELECT dept_key, string_agg(coalesce(sn.supplier_name, s.supplier_uid) || ' (' || n || ')', '; ' ORDER BY n DESC, s.supplier_uid)
              FILTER (WHERE rk <= 3) AS top_suppliers FROM (
         SELECT dept_key, supplier_uid, count(*) n,
                row_number() OVER (PARTITION BY dept_key ORDER BY count(*) DESC, supplier_uid) AS rk
@@ -353,8 +360,11 @@ def _write_csv(con, sql: str, order_by: str, out: Path) -> int:
 def build(today: dt.date, outdir: Path | None = None) -> dict[str, int]:
     outdir = outdir or common.views_dir()
     con = duckdb.connect()
-    con.create_function("first_part_s", _first_part_s, ["VARCHAR"], "VARCHAR", null_handling="special")
-    con.create_function("fiscal_year_of", lambda d: common.fiscal_year(d), ["DATE"], "VARCHAR", null_handling="special")
+    con.execute("CREATE OR REPLACE MACRO first_part_s(s) AS nullif(trim(split_part(s, ';', 1)), '')")
+    con.execute("""CREATE OR REPLACE MACRO fiscal_year_of(d) AS
+                   CASE WHEN d IS NULL THEN 'undated'
+                        WHEN month(d) >= 4 THEN CAST(year(d) AS VARCHAR) || '-' || CAST(year(d) + 1 AS VARCHAR)
+                        ELSE CAST(year(d) - 1 AS VARCHAR) || '-' || CAST(year(d) AS VARCHAR) END""")
     setup(con, today)
     return {
         "retender_forecast": retender_forecast(con, today, outdir / "retender_forecast.csv"),

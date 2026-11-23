@@ -75,3 +75,11 @@ class LinesAndViewsTest(TempDataCase):
         self.assertEqual(float(csc["share_bought_through_pspc"]), 1.0)
         counts = self.read("counts")
         self.assertIn("toronto", {r["source"] for r in counts})
+
+
+class DeterminismTest(LinesAndViewsTest):
+    def test_views_are_byte_identical_across_runs(self):
+        first = {p.name: p.read_bytes() for p in (self.tmp / "views").glob("*.csv")}
+        views.build(TODAY)
+        second = {p.name: p.read_bytes() for p in (self.tmp / "views").glob("*.csv")}
+        self.assertEqual(first, second)

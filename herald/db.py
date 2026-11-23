@@ -31,7 +31,7 @@ def connect(database: str = ":memory:") -> duckdb.DuckDBPyConnection:
         con.execute(f"CREATE OR REPLACE VIEW lines AS SELECT * FROM read_parquet({store.sql_list(lines)}, union_by_name=true)")
         con.execute("""CREATE OR REPLACE VIEW lines_current AS SELECT * FROM lines
                        QUALIFY row_number() OVER (PARTITION BY source, record_type, source_id, amendment
-                                                  ORDER BY first_seen DESC, source_file DESC) = 1""")
+                                                  ORDER BY first_seen DESC, source_file DESC, row_hash) = 1""")
     return con
 
 
