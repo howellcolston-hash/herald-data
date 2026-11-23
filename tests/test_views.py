@@ -60,7 +60,10 @@ class LinesAndViewsTest(TempDataCase):
         self.assertEqual(c6["possible_replacement_tender"][:14], "PW-26-00000009")
         dnd = next(r for r in rows if r["source_id"] == "MX-0000000002")
         self.assertEqual(dnd["incumbent"], "ACME FURNITURE")   # the legal-name-only award joins the standardized supplier
-        self.assertEqual([r["expected_notice_from"] for r in rows], sorted(r["expected_notice_from"] for r in rows))
+        rank = {"window open": 1, "upcoming": 2, "window passed": 3}
+        keys = [(rank[r["notice_status"]], r["expected_notice_to"] if r["notice_status"] == "window open"
+                 else r["expected_notice_from"]) for r in rows]
+        self.assertEqual(keys, sorted(keys))           # most urgent first: open windows, then upcoming, then passed
 
     def test_category_book_and_buyer_profiles(self):
         book = {(r["scheme"], r["class"]): r for r in self.read("category_book")}

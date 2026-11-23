@@ -210,7 +210,10 @@ def retender_forecast(con, today: dt.date, out: Path) -> int:
     con.execute(f"CREATE OR REPLACE TEMP TABLE fc_out AS {sql}")
     con.execute("""UPDATE fc_out SET earlier_tender_dates = array_to_string(list_slice(string_split(earlier_tender_dates, '; '), 1, 5), '; ')
                    WHERE earlier_tender_dates IS NOT NULL""")
-    return _write_csv(con, "SELECT * FROM fc_out", "expected_notice_from, value DESC NULLS LAST, deal_id", out)
+    order = ("CASE notice_status WHEN 'window open' THEN 1 WHEN 'upcoming' THEN 2 ELSE 3 END, "
+             "CASE WHEN notice_status = 'window open' THEN expected_notice_to ELSE expected_notice_from END, "
+             "value DESC NULLS LAST, deal_id")
+    return _write_csv(con, "SELECT * FROM fc_out", order, out)
 
 
 def category_book(con, today: dt.date, out: Path) -> int:

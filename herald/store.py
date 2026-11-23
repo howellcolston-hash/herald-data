@@ -154,7 +154,7 @@ IGNORED_COLUMNS = {
     "endUserEntitiesAddress-adresseEntitesUtilisateurFinal-eng",
     "contactInfoFax", "contactInfoAddressLine-contactInfoAdresseLigne-eng", "contactInfoCity-contacterInfoVille-eng",
     "contactInfoProvince-contacterInfoProvince-eng", "contactInfoPostalcode", "contactInfoCountry-contactInfoPays-eng",
-    "supplierAddressLine-ligneAdresseFournisseur-eng", "_id", "Award", "Supplier Address",
+    "supplierAddressLine-ligneAdresseFournisseur-eng", "_id", "Award", "Supplier Address", "Buyer Phone Number",
 }
 
 
