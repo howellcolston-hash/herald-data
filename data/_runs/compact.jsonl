@@ -1,0 +1,1 @@
+{"collector": "compact", "counts": {}, "finished": "2026-11-23T01:43:19+00:00", "notes": "nothing to fold", "params": {"before": "2026-11-01"}, "periods": [], "rows": 0, "runner": "github:45096118357", "started": "2026-11-23T01:43:19+00:00", "status": "ok"}
