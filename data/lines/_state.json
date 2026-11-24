@@ -63,6 +63,10 @@
   "sha1": "58be57c87c3d18f31be4fc708b25de7eeb2dddac",
   "version": 2
  },
+ "canadabuys-awards/daily/2026-11-24.parquet": {
+  "sha1": "d031a256ed54118dd58357cbddeee260b72dc9d5",
+  "version": 2
+ },
  "canadabuys-contracts/2008-2009/base.parquet": {
   "sha1": "bfca16d250bc0e360bb0bfed3689e46850d48207",
   "version": 2
@@ -215,6 +219,10 @@
   "sha1": "422959feef12190780124ba5d3373b1972c01b2a",
   "version": 2
  },
+ "canadabuys-tenders/daily/2026-11-24.parquet": {
+  "sha1": "864d09f14170a1f6160e94899351c79b63edb652",
+  "version": 2
+ },
  "toronto-awards/2010-2011/base.parquet": {
   "sha1": "f65a024b5792a0bead34384da373bff286c294d7",
   "version": 2
@@ -281,6 +289,10 @@
  },
  "toronto-awards/2026-2027/base.parquet": {
   "sha1": "8e47769411e44b0177ca25de77b23d583e74c5df",
+  "version": 2
+ },
+ "toronto-awards/daily/2026-11-24.parquet": {
+  "sha1": "715c0de4f3e3374d680cd2fbf27fa9412491b957",
   "version": 2
  },
  "toronto-awards/undated/base.parquet": {
@@ -357,6 +369,10 @@
  },
  "toronto-solicitations/2026-2027/base.parquet": {
   "sha1": "0a70cec7bc260d341102ee0322b3aff09f66bc6e",
+  "version": 2
+ },
+ "toronto-solicitations/daily/2026-11-24.parquet": {
+  "sha1": "ff65ca458cf66d7ccb126feb010ad706926dd655",
   "version": 2
  }
 }
